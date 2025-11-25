@@ -4,7 +4,6 @@ import joblib
 import pandas as pd
 import numpy as np
 import os
-from dotenv import load_dotenv
 import traceback
 import google.generativeai as genai
 
@@ -12,17 +11,7 @@ import google.generativeai as genai
 app = Flask(__name__)
 CORS(app)
 
-# Load environment variables from a .env file (if present)
-load_dotenv()
-
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-if not GEMINI_API_KEY:
-    # Fail fast with a clear message to avoid using a hard-coded secret
-    raise SystemExit(
-        "GEMINI_API_KEY not set. Please create a `.env` file with GEMINI_API_KEY=your_key "
-        "or set the environment variable before running the app."
-    )
-
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyBhf2dcc8cxQb2uNsVAgRc5b2LwRfWYg9k')
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel(
     'gemini-2.0-flash-exp',
@@ -33,9 +22,9 @@ gemini_model = genai.GenerativeModel(
 MODEL_PATH = 'best_eladfp_model.pkl'
 if os.path.exists(MODEL_PATH):
     model = joblib.load(MODEL_PATH)
-    print("ELADFP Ensemble Model loaded successfully!")
+    print("✅ ELADFP Ensemble Model loaded successfully!")
 else:
-    print(f"ERROR: {MODEL_PATH} not found! Please run the training script first.")
+    print(f"❌ ERROR: {MODEL_PATH} not found! Please run the training script first.")
     exit(1)
 
 INPUT_FEATURES = [
@@ -73,7 +62,7 @@ def preprocess_features(input_df):
     # Reorder columns to match training
     df = df[MODEL_FEATURES]
 
-    print("\nPreprocessed input:")
+    print("\n🧹 Preprocessed input:")
     print(df.to_string(index=False))
     return df
 
@@ -109,7 +98,7 @@ def generate_gemini_reasoning(features, prediction, confidence):
                 feature_analysis.append(f"Balanced follower ratio ({ratio:.1f}:1)")
 
         if features['#posts'] == 0:
-            feature_analysis.append("No posts")
+            feature_analysis.append("❌ No posts")
         elif features['#posts'] < 5:
             feature_analysis.append(f"Few posts ({features['#posts']})")
         else:
@@ -143,7 +132,7 @@ def predict_fake():
     try:
         data = request.get_json()
         print("\n" + "="*70)
-        print("Received data for prediction:")
+        print("📩 Received data for prediction:")
         print(data)
         print("="*70)
 
@@ -164,7 +153,7 @@ def predict_fake():
         proba = model.predict_proba(processed_df)[0]
         real_prob, fake_prob = float(proba[0]), float(proba[1])
 
-        print(f"Prediction → {'FAKE' if prediction == 1 else 'REAL'} | Fake Prob = {fake_prob:.3f}")
+        print(f"✅ Prediction → {'FAKE' if prediction == 1 else 'REAL'} | Fake Prob = {fake_prob:.3f}")
 
         confidence = {'real_profile_prob': real_prob, 'fake_profile_prob': fake_prob}
         reasoning = generate_gemini_reasoning(input_data, prediction, confidence)
@@ -173,11 +162,11 @@ def predict_fake():
             'prediction': {'is_fake': int(prediction)},
             'confidence': confidence,
             'reasoning': reasoning,
-            'message': 'FAKE PROFILE DETECTED!' if prediction == 1 else 'Real Profile',
+            'message': '⚠️ FAKE PROFILE DETECTED!' if prediction == 1 else '✅ Real Profile',
             'features_used': input_data
         }
 
-        print("\nResponse Sent:")
+        print("\n📤 Response Sent:")
         print(response)
         print("="*70)
         return jsonify(response)
