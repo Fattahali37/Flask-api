@@ -68,6 +68,10 @@ def preprocess_features(input_df):
 
 
 def generate_gemini_reasoning(features, prediction, confidence):
+    """
+    Generate AI reasoning for the prediction. 
+    If Gemini fails, returns fallback reasoning - prediction still works!
+    """
     try:
         print("\n🤖 Generating Gemini reasoning...")
         print(f"Features received: {features}")
@@ -76,43 +80,8 @@ def generate_gemini_reasoning(features, prediction, confidence):
         posts = features.get('#posts', 0)
         followers = features.get('#followers', 0)
         following = features.get('#following', 0)
-        
-        feature_analysis = []
-        feature_analysis.append("Has profile picture" if features.get('profile pic', 0) == 1 else "No profile picture")
-
         nums_ratio = features.get('nums/length username', 0)
-        if nums_ratio > 0.5:
-            feature_analysis.append(f"Username contains {int(nums_ratio * 100)}% numbers (bot-like)")
-        else:
-            feature_analysis.append(f"Username contains few numbers ({int(nums_ratio * 100)}%)")
-
-        feature_analysis.append("Name equals username (suspicious)" if features.get('name==username', 0) == 1 else "Name differs from username")
-
         bio_len = features.get('description length', 0)
-        if bio_len == 0:
-            feature_analysis.append("No bio/description")
-        elif bio_len < 20:
-            feature_analysis.append(f"Short bio ({int(bio_len)} chars)")
-        else:
-            feature_analysis.append(f"Detailed bio ({int(bio_len)} chars)")
-
-        feature_analysis.append("Has external website" if features.get('external URL', 0) == 1 else "No external website")
-
-        if followers > 0:
-            ratio = following / (followers + 1)
-            if ratio > 5:
-                feature_analysis.append(f"High following/follower ratio ({ratio:.1f}:1)")
-            elif ratio < 0.2:
-                feature_analysis.append(f"Low following/follower ratio ({ratio:.1f}:1)")
-            else:
-                feature_analysis.append(f"Balanced follower ratio ({ratio:.1f}:1)")
-
-        if posts == 0:
-            feature_analysis.append("❌ No posts")
-        elif posts < 5:
-            feature_analysis.append(f"Few posts ({int(posts)})")
-        else:
-            feature_analysis.append(f"Active account ({int(posts)} posts)")
 
         prompt = f"""Analyze this Instagram profile briefly and explain the result.
 
@@ -124,7 +93,7 @@ Account Status: {"Private" if features.get('private', 0) == 1 else "Public"}
 
 Provide a brief 1-2 sentence explanation for why this is a {"fake" if prediction == 1 else "real"} profile."""
 
-        print(f"📝 Prompt:\n{prompt}")
+        print(f"📝 Sending prompt to Gemini...")
         response = gemini_model.generate_content(prompt, request_options={'timeout': 15})
         
         if response and response.text:
@@ -132,21 +101,61 @@ Provide a brief 1-2 sentence explanation for why this is a {"fake" if prediction
             print(f"✅ Gemini response received: {result}")
             return result
         else:
-            print("⚠️ Gemini returned empty response")
-            return (
-                "This profile exhibits characteristics of a fake account including bot-like patterns in the username and unusual engagement metrics."
-                if prediction == 1 else
-                "This profile appears legitimate with natural engagement patterns, detailed information, and consistent account behavior."
-            )
+            print("⚠️ Gemini returned empty response, using fallback")
+            return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
 
     except Exception as e:
-        print(f"❌ Gemini reasoning generation failed: {str(e)}")
-        print(traceback.format_exc())
-        return (
-            "Fake profile indicators include incomplete bio, unusual ratio patterns, and repetitive or number-heavy usernames."
-            if prediction == 1 else
-            "Real profile indicators include detailed bio, normal ratios, and natural username behavior."
-        )
+        error_msg = str(e)
+        print(f"⚠️ Gemini API failed: {error_msg[:100]}")
+        
+        # Check if it's a rate limit error
+        if "429" in error_msg or "quota" in error_msg.lower() or "ResourceExhausted" in str(type(e)):
+            print("⚠️ Gemini API rate limit exceeded - using fallback reasoning")
+        else:
+            print(f"⚠️ Gemini error: {error_msg}")
+        
+        # Return fallback reasoning instead of crashing
+        posts = features.get('#posts', 0)
+        followers = features.get('#followers', 0)
+        following = features.get('#following', 0)
+        nums_ratio = features.get('nums/length username', 0)
+        bio_len = features.get('description length', 0)
+        
+        return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
+
+
+def _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len):
+    """Generate fallback reasoning based on profile features when Gemini unavailable"""
+    if prediction == 1:
+        # Fake profile reasoning
+        reasons = []
+        if nums_ratio > 0.5:
+            reasons.append("high number ratio in username")
+        if followers == 0:
+            reasons.append("no followers")
+        if posts == 0:
+            reasons.append("no posts")
+        if bio_len == 0:
+            reasons.append("no bio")
+        
+        if reasons:
+            return f"Profile classified as fake due to: {', '.join(reasons)}."
+        else:
+            return "Profile exhibits characteristics typical of fake accounts based on engagement patterns and account metadata."
+    else:
+        # Real profile reasoning
+        reasons = []
+        if posts > 5:
+            reasons.append("active posting history")
+        if followers > 0 and bio_len > 0:
+            reasons.append("complete profile information")
+        if nums_ratio < 0.3:
+            reasons.append("natural username pattern")
+        
+        if reasons:
+            return f"Profile appears legitimate with {', '.join(reasons)}."
+        else:
+            return "Profile exhibits characteristics typical of authentic accounts based on engagement patterns and account metadata."
 
 # ==============================================================
 # Prediction Endpoint
