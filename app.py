@@ -69,27 +69,37 @@ def preprocess_features(input_df):
 
 def generate_gemini_reasoning(features, prediction, confidence):
     try:
+        print("\n🤖 Generating Gemini reasoning...")
+        print(f"Features received: {features}")
+        
+        # Extract raw count values (passed as input, before preprocessing)
+        posts = features.get('#posts', 0)
+        followers = features.get('#followers', 0)
+        following = features.get('#following', 0)
+        
         feature_analysis = []
-        feature_analysis.append("Has profile picture" if features['profile pic'] == 1 else "No profile picture")
+        feature_analysis.append("Has profile picture" if features.get('profile pic', 0) == 1 else "No profile picture")
 
-        if features['nums/length username'] > 0.5:
-            feature_analysis.append(f"Username contains {int(features['nums/length username'] * 100)}% numbers (bot-like)")
+        nums_ratio = features.get('nums/length username', 0)
+        if nums_ratio > 0.5:
+            feature_analysis.append(f"Username contains {int(nums_ratio * 100)}% numbers (bot-like)")
         else:
-            feature_analysis.append(f"Username contains few numbers ({int(features['nums/length username'] * 100)}%)")
+            feature_analysis.append(f"Username contains few numbers ({int(nums_ratio * 100)}%)")
 
-        feature_analysis.append("Name equals username (suspicious)" if features['name==username'] == 1 else "Name differs from username")
+        feature_analysis.append("Name equals username (suspicious)" if features.get('name==username', 0) == 1 else "Name differs from username")
 
-        if features['description length'] == 0:
+        bio_len = features.get('description length', 0)
+        if bio_len == 0:
             feature_analysis.append("No bio/description")
-        elif features['description length'] < 20:
-            feature_analysis.append(f"Short bio ({features['description length']} chars)")
+        elif bio_len < 20:
+            feature_analysis.append(f"Short bio ({int(bio_len)} chars)")
         else:
-            feature_analysis.append(f"Detailed bio ({features['description length']} chars)")
+            feature_analysis.append(f"Detailed bio ({int(bio_len)} chars)")
 
-        feature_analysis.append("Has external website" if features['external URL'] == 1 else "No external website")
+        feature_analysis.append("Has external website" if features.get('external URL', 0) == 1 else "No external website")
 
-        if features['#followers'] > 0:
-            ratio = features['#following'] / (features['#followers'] + 1)
+        if followers > 0:
+            ratio = following / (followers + 1)
             if ratio > 5:
                 feature_analysis.append(f"High following/follower ratio ({ratio:.1f}:1)")
             elif ratio < 0.2:
@@ -97,27 +107,41 @@ def generate_gemini_reasoning(features, prediction, confidence):
             else:
                 feature_analysis.append(f"Balanced follower ratio ({ratio:.1f}:1)")
 
-        if features['#posts'] == 0:
+        if posts == 0:
             feature_analysis.append("❌ No posts")
-        elif features['#posts'] < 5:
-            feature_analysis.append(f"Few posts ({features['#posts']})")
+        elif posts < 5:
+            feature_analysis.append(f"Few posts ({int(posts)})")
         else:
-            feature_analysis.append(f"Active account ({features['#posts']} posts)")
+            feature_analysis.append(f"Active account ({int(posts)} posts)")
 
-        prompt = f"""
-Analyze this Instagram profile briefly.
+        prompt = f"""Analyze this Instagram profile briefly and explain the result.
 
-Result: {"FAKE" if prediction == 1 else "REAL"} ({confidence['fake_profile_prob'] * 100:.0f}% fake)
-Profile: {features['#posts']} posts, {features['#followers']} followers, {features['#following']} following
-Username: {int(features['nums/length username'] * 100)}% numbers, Bio: {features['description length']} chars
-Picture: {"Yes" if features['profile pic'] == 1 else "No"}, Link: {"Yes" if features['external URL'] == 1 else "No"}
+Result: {"FAKE" if prediction == 1 else "REAL"} ({confidence['fake_profile_prob'] * 100:.0f}% confidence)
+Profile Stats: {int(posts)} posts, {int(followers)} followers, {int(following)} following
+Username: {int(nums_ratio * 100)}% numbers, Bio: {int(bio_len)} chars
+Picture: {"Yes" if features.get('profile pic', 0) == 1 else "No"}, Website: {"Yes" if features.get('external URL', 0) == 1 else "No"}
+Account Status: {"Private" if features.get('private', 0) == 1 else "Public"}
 
-Explain WHY it's {"fake" if prediction == 1 else "real"} based on these metrics.
-"""
-        response = gemini_model.generate_content(prompt, request_options={'timeout': 10})
-        return response.text.strip()
+Provide a brief 1-2 sentence explanation for why this is a {"fake" if prediction == 1 else "real"} profile."""
 
-    except Exception:
+        print(f"📝 Prompt:\n{prompt}")
+        response = gemini_model.generate_content(prompt, request_options={'timeout': 15})
+        
+        if response and response.text:
+            result = response.text.strip()
+            print(f"✅ Gemini response received: {result}")
+            return result
+        else:
+            print("⚠️ Gemini returned empty response")
+            return (
+                "This profile exhibits characteristics of a fake account including bot-like patterns in the username and unusual engagement metrics."
+                if prediction == 1 else
+                "This profile appears legitimate with natural engagement patterns, detailed information, and consistent account behavior."
+            )
+
+    except Exception as e:
+        print(f"❌ Gemini reasoning generation failed: {str(e)}")
+        print(traceback.format_exc())
         return (
             "Fake profile indicators include incomplete bio, unusual ratio patterns, and repetitive or number-heavy usernames."
             if prediction == 1 else
