@@ -11,7 +11,7 @@ import google.generativeai as genai
 app = Flask(__name__)
 CORS(app)
 
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyCEJREoPYpjyRbUPblwHhRBxKFDECgx_AI')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyDcPteX6IGUkU-2O9JShKF3Hf82ut27RsM')
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel(
     'gemini-2.0-flash-exp',
