@@ -11,7 +11,7 @@ import google.generativeai as genai
 app = Flask(__name__)
 CORS(app)
 
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyDcPteX6IGUkU-2O9JShKF3Hf82ut27RsM')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyDJuGhvR5V_Ksle4yWcSbTLra0N-jURwz8')
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel(
     'gemini-2.0-flash-exp',
@@ -62,7 +62,7 @@ def preprocess_features(input_df):
     # Reorder columns to match training
     df = df[MODEL_FEATURES]
 
-    print("\n🧹 Preprocessed input:")
+    print("\nPreprocessed input:")
     print(df.to_string(index=False))
     return df
 
@@ -195,7 +195,7 @@ def predict_fake():
             'prediction': {'is_fake': int(prediction)},
             'confidence': confidence,
             'reasoning': reasoning,
-            'message': 'FAKE PROFILE DETECTED!' if prediction == 1 else '✅ Real Profile',
+            'message': 'FAKE PROFILE DETECTED!' if prediction == 1 else 'Real Profile',
             'features_used': input_data
         }
 
