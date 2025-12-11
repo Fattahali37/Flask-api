@@ -6,17 +6,30 @@ import numpy as np
 import os
 import traceback
 import google.generativeai as genai
+import time
 
 
 app = Flask(__name__)
 CORS(app)
 
+
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel(
-    'gemini-2.0-flash-exp',
-    generation_config={'temperature': 0.7, 'max_output_tokens': 150, 'top_p': 0.8, 'top_k': 40}
-)
+if not GEMINI_API_KEY:
+    print("WARNING: GEMINI_API_KEY environment variable not set!")
+    print("   Gemini reasoning will be disabled. Set it with:")
+    print("   export GEMINI_API_KEY='your-api-key-here'")
+    gemini_model = None
+else:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel(
+        'gemini-2.0-flash-exp',
+        generation_config={'temperature': 0.7, 'max_output_tokens': 150, 'top_p': 0.8, 'top_k': 40}
+    )
+    print("Gemini API configured successfully!")
+
+# Rate limiting: track last request time
+last_gemini_request_time = 0
+MIN_REQUEST_INTERVAL = 1.0  # Minimum 1 second between requests (60 RPM max)
 
 
 MODEL_PATH = 'best_eladfp_model.pkl'
@@ -24,7 +37,7 @@ if os.path.exists(MODEL_PATH):
     model = joblib.load(MODEL_PATH)
     print("ELADFP Ensemble Model loaded successfully!")
 else:
-    print(f"ERROR: {MODEL_PATH} not found! Please run the training script first.")
+    print(f"❌ ERROR: {MODEL_PATH} not found! Please run the training script first.")
     exit(1)
 
 INPUT_FEATURES = [
@@ -62,26 +75,42 @@ def preprocess_features(input_df):
     # Reorder columns to match training
     df = df[MODEL_FEATURES]
 
-    print("\nPreprocessed input:")
+    print("\n🧹 Preprocessed input:")
     print(df.to_string(index=False))
     return df
 
 
 def generate_gemini_reasoning(features, prediction, confidence):
     """
-    Generate AI reasoning for the prediction. 
+    Generate AI reasoning for the prediction with rate limiting and retry logic.
     If Gemini fails, returns fallback reasoning - prediction still works!
     """
+    global last_gemini_request_time
+    
+    # Extract values first for fallback
+    posts = features.get('#posts', 0)
+    followers = features.get('#followers', 0)
+    following = features.get('#following', 0)
+    nums_ratio = features.get('nums/length username', 0)
+    bio_len = features.get('description length', 0)
+    
+    # If Gemini not configured, use fallback immediately
+    if gemini_model is None:
+        print("Gemini API not configured - using fallback reasoning")
+        return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
+    
     try:
-        print("\n🤖 Generating Gemini reasoning...")
-        print(f"Features received: {features}")
+        print("\nGenerating Gemini reasoning...")
         
-        # Extract raw count values (passed as input, before preprocessing)
-        posts = features.get('#posts', 0)
-        followers = features.get('#followers', 0)
-        following = features.get('#following', 0)
-        nums_ratio = features.get('nums/length username', 0)
-        bio_len = features.get('description length', 0)
+        # Rate limiting: ensure minimum interval between requests
+        current_time = time.time()
+        time_since_last_request = current_time - last_gemini_request_time
+        if time_since_last_request < MIN_REQUEST_INTERVAL:
+            sleep_time = MIN_REQUEST_INTERVAL - time_since_last_request
+            print(f"⏳ Rate limiting: waiting {sleep_time:.2f}s before next request...")
+            time.sleep(sleep_time)
+        
+        last_gemini_request_time = time.time()
 
         prompt = f"""Analyze this Instagram profile briefly and explain the result.
 
@@ -93,34 +122,44 @@ Account Status: {"Private" if features.get('private', 0) == 1 else "Public"}
 
 Provide a brief 1-2 sentence explanation for why this is a {"fake" if prediction == 1 else "real"} profile."""
 
-        print(f"📝 Sending prompt to Gemini...")
-        response = gemini_model.generate_content(prompt, request_options={'timeout': 15})
+        print(f"Sending prompt to Gemini...")
         
-        if response and response.text:
-            result = response.text.strip()
-            print(f"Gemini response received: {result}")
-            return result
-        else:
-            print("Gemini returned empty response, using fallback")
-            return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
+        # Retry logic with exponential backoff
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                response = gemini_model.generate_content(prompt, request_options={'timeout': 15})
+                
+                if response and response.text:
+                    result = response.text.strip()
+                    print(f" Gemini response received: {result}")
+                    return result
+                else:
+                    print(" Gemini returned empty response, using fallback")
+                    return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
+                    
+            except Exception as retry_error:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt)  # Exponential backoff: 1s, 2s
+                    print(f"Retry {attempt + 1}/{max_retries} failed, waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    raise retry_error
 
     except Exception as e:
         error_msg = str(e)
-        print(f"Gemini API failed: {error_msg[:100]}")
+        print(f" Gemini API failed: {error_msg[:150]}")
         
-        # Check if it's a rate limit error
+        # Check if it's a rate limit or quota error
         if "429" in error_msg or "quota" in error_msg.lower() or "ResourceExhausted" in str(type(e)):
-            print("Gemini API rate limit exceeded - using fallback reasoning")
+            print(" Gemini API quota exceeded - using fallback reasoning")
+            print("   💡 Check your API quota at: https://aistudio.google.com/app/apikey")
+        elif "401" in error_msg or "authentication" in error_msg.lower():
+            print(" Gemini API authentication failed - check your API key")
         else:
-            print(f"Gemini error: {error_msg}")
+            print(f" Gemini error: {error_msg}")
         
         # Return fallback reasoning instead of crashing
-        posts = features.get('#posts', 0)
-        followers = features.get('#followers', 0)
-        following = features.get('#following', 0)
-        nums_ratio = features.get('nums/length username', 0)
-        bio_len = features.get('description length', 0)
-        
         return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
 
 
@@ -165,7 +204,7 @@ def predict_fake():
     try:
         data = request.get_json()
         print("\n" + "="*70)
-        print("📩 Received data for prediction:")
+        print("Received data for prediction:")
         print(data)
         print("="*70)
 
@@ -195,7 +234,7 @@ def predict_fake():
             'prediction': {'is_fake': int(prediction)},
             'confidence': confidence,
             'reasoning': reasoning,
-            'message': 'FAKE PROFILE DETECTED!' if prediction == 1 else 'Real Profile',
+            'message': 'FAKE PROFILE DETECTED!' if prediction == 1 else '✅ Real Profile',
             'features_used': input_data
         }
 
