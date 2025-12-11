@@ -22,7 +22,7 @@ if not GEMINI_API_KEY:
 else:
     genai.configure(api_key=GEMINI_API_KEY)
     gemini_model = genai.GenerativeModel(
-        'gemini-1.5-flash',
+        'gemini-2.5-flash',
         generation_config={'temperature': 0.7, 'max_output_tokens': 150, 'top_p': 0.8, 'top_k': 40}
     )
     print("✅ Gemini API configured successfully!")
