@@ -22,9 +22,9 @@ gemini_model = genai.GenerativeModel(
 MODEL_PATH = 'best_eladfp_model.pkl'
 if os.path.exists(MODEL_PATH):
     model = joblib.load(MODEL_PATH)
-    print("✅ ELADFP Ensemble Model loaded successfully!")
+    print("ELADFP Ensemble Model loaded successfully!")
 else:
-    print(f"❌ ERROR: {MODEL_PATH} not found! Please run the training script first.")
+    print(f"ERROR: {MODEL_PATH} not found! Please run the training script first.")
     exit(1)
 
 INPUT_FEATURES = [
@@ -98,21 +98,21 @@ Provide a brief 1-2 sentence explanation for why this is a {"fake" if prediction
         
         if response and response.text:
             result = response.text.strip()
-            print(f"✅ Gemini response received: {result}")
+            print(f"Gemini response received: {result}")
             return result
         else:
-            print("⚠️ Gemini returned empty response, using fallback")
+            print("Gemini returned empty response, using fallback")
             return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
 
     except Exception as e:
         error_msg = str(e)
-        print(f"⚠️ Gemini API failed: {error_msg[:100]}")
+        print(f"Gemini API failed: {error_msg[:100]}")
         
         # Check if it's a rate limit error
         if "429" in error_msg or "quota" in error_msg.lower() or "ResourceExhausted" in str(type(e)):
-            print("⚠️ Gemini API rate limit exceeded - using fallback reasoning")
+            print("Gemini API rate limit exceeded - using fallback reasoning")
         else:
-            print(f"⚠️ Gemini error: {error_msg}")
+            print(f"Gemini error: {error_msg}")
         
         # Return fallback reasoning instead of crashing
         posts = features.get('#posts', 0)
@@ -186,7 +186,7 @@ def predict_fake():
         proba = model.predict_proba(processed_df)[0]
         real_prob, fake_prob = float(proba[0]), float(proba[1])
 
-        print(f"✅ Prediction → {'FAKE' if prediction == 1 else 'REAL'} | Fake Prob = {fake_prob:.3f}")
+        print(f"Prediction → {'FAKE' if prediction == 1 else 'REAL'} | Fake Prob = {fake_prob:.3f}")
 
         confidence = {'real_profile_prob': real_prob, 'fake_profile_prob': fake_prob}
         reasoning = generate_gemini_reasoning(input_data, prediction, confidence)
@@ -195,7 +195,7 @@ def predict_fake():
             'prediction': {'is_fake': int(prediction)},
             'confidence': confidence,
             'reasoning': reasoning,
-            'message': '⚠️ FAKE PROFILE DETECTED!' if prediction == 1 else '✅ Real Profile',
+            'message': 'FAKE PROFILE DETECTED!' if prediction == 1 else '✅ Real Profile',
             'features_used': input_data
         }
 
