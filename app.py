@@ -6,8 +6,7 @@ import numpy as np
 import os
 import traceback
 import time
-import requests
-import json
+from huggingface_hub import InferenceClient
 
 
 app = Flask(__name__)
@@ -15,17 +14,24 @@ CORS(app)
 
 # Hugging Face Configuration
 HF_API_TOKEN = os.getenv('HF_API_TOKEN')
-HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
 
 if not HF_API_TOKEN:
     print("⚠️ WARNING: HF_API_TOKEN environment variable not set!")
     print("   LLM reasoning will be disabled. Get your free token at:")
     print("   https://huggingface.co/settings/tokens")
     print("   Then set it with: export HF_API_TOKEN='your-token-here'")
+    hf_client = None
     llm_enabled = False
 else:
-    llm_enabled = True
-    print("✅ Hugging Face LLM configured successfully!")
+    try:
+        # Initialize Hugging Face Inference Client with the new API
+        hf_client = InferenceClient(token=HF_API_TOKEN)
+        llm_enabled = True
+        print("✅ Hugging Face LLM configured successfully!")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize Hugging Face client: {e}")
+        hf_client = None
+        llm_enabled = False
 
 # Rate limiting: track last request time
 last_llm_request_time = 0
@@ -95,7 +101,7 @@ def generate_llm_reasoning(features, prediction, confidence):
     bio_len = features.get('description length', 0)
     
     # If LLM not configured, use fallback immediately
-    if not llm_enabled:
+    if not llm_enabled or hf_client is None:
         print("⚠️ LLM not configured - using fallback reasoning")
         return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
     
@@ -113,7 +119,7 @@ def generate_llm_reasoning(features, prediction, confidence):
         last_llm_request_time = time.time()
 
         # Build concise prompt for the LLM
-        prompt = f"""[INST] Analyze this Instagram profile and explain in 1-2 sentences why it's {"FAKE" if prediction == 1 else "REAL"}.
+        prompt = f"""Analyze this Instagram profile and explain in 1-2 sentences why it's {"FAKE" if prediction == 1 else "REAL"}.
 
 Result: {"FAKE" if prediction == 1 else "REAL"} ({confidence['fake_profile_prob'] * 100:.0f}% confidence)
 Stats: {int(posts)} posts, {int(followers)} followers, {int(following)} following
@@ -121,71 +127,45 @@ Username: {int(nums_ratio * 100)}% numbers, Bio: {int(bio_len)} chars
 Has picture: {"Yes" if features.get('profile pic', 0) == 1 else "No"}, Has website: {"Yes" if features.get('external URL', 0) == 1 else "No"}
 Status: {"Private" if features.get('private', 0) == 1 else "Public"}
 
-Explanation: [/INST]"""
+Explanation:"""
 
         print(f"📝 Sending prompt to Hugging Face...")
-        
-        headers = {
-            "Authorization": f"Bearer {HF_API_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": 100,
-                "temperature": 0.7,
-                "top_p": 0.9,
-                "return_full_text": False
-            }
-        }
         
         # Retry logic with exponential backoff
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                response = requests.post(
-                    HF_API_URL,
-                    headers=headers,
-                    json=payload,
-                    timeout=20
+                # Use text_generation with a fast, free model
+                response = hf_client.text_generation(
+                    prompt,
+                    model="microsoft/Phi-3-mini-4k-instruct",
+                    max_new_tokens=100,
+                    temperature=0.7,
+                    top_p=0.9,
+                    return_full_text=False
                 )
                 
-                if response.status_code == 200:
-                    result = response.json()
-                    
-                    # Handle different response formats
-                    if isinstance(result, list) and len(result) > 0:
-                        generated_text = result[0].get('generated_text', '').strip()
-                    elif isinstance(result, dict):
-                        generated_text = result.get('generated_text', '').strip()
-                    else:
-                        generated_text = str(result).strip()
-                    
-                    if generated_text:
-                        # Clean up the response (remove extra whitespace, limit length)
-                        generated_text = ' '.join(generated_text.split())[:300]
-                        print(f"✅ LLM response: {generated_text}")
-                        return generated_text
-                    else:
-                        print("⚠️ LLM returned empty response, using fallback")
-                        return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
-                
-                elif response.status_code == 503:
-                    # Model is loading
-                    print(f"⚠️ Model loading, retry {attempt + 1}/{max_retries}...")
-                    if attempt < max_retries - 1:
-                        time.sleep(5)  # Wait for model to load
-                        continue
-                    else:
-                        print("⚠️ Model still loading, using fallback")
-                        return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
-                
+                if response:
+                    # Clean up the response
+                    generated_text = response.strip()
+                    # Limit to 300 characters
+                    generated_text = ' '.join(generated_text.split())[:300]
+                    print(f"✅ LLM response: {generated_text}")
+                    return generated_text
                 else:
-                    error_msg = f"Status {response.status_code}: {response.text[:100]}"
-                    raise Exception(error_msg)
+                    print("⚠️ LLM returned empty response, using fallback")
+                    return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
                     
             except Exception as retry_error:
+                error_msg = str(retry_error)
+                
+                # Check if model is loading
+                if "loading" in error_msg.lower() or "503" in error_msg:
+                    print(f"⚠️ Model loading, retry {attempt + 1}/{max_retries}...")
+                    if attempt < max_retries - 1:
+                        time.sleep(10)  # Wait for model to load
+                        continue
+                
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt)  # Exponential backoff: 1s, 2s
                     print(f"⚠️ Retry {attempt + 1}/{max_retries} failed, waiting {wait_time}s...")
@@ -200,7 +180,7 @@ Explanation: [/INST]"""
         # Check error type
         if "429" in error_msg or "rate limit" in error_msg.lower():
             print("⚠️ Rate limit exceeded - using fallback reasoning")
-        elif "401" in error_msg or "authentication" in error_msg.lower():
+        elif "401" in error_msg or "authentication" in error_msg.lower() or "unauthorized" in error_msg.lower():
             print("⚠️ Authentication failed - check your HF_API_TOKEN")
             print("   Get your token at: https://huggingface.co/settings/tokens")
         else:
