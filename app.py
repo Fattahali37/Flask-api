@@ -5,36 +5,33 @@ import pandas as pd
 import numpy as np
 import os
 import traceback
-import time
-import requests
+import google.generativeai as genai
 
 
 app = Flask(__name__)
 CORS(app)
 
-# Hugging Face Configuration - Using NEW Router API
-HF_API_TOKEN = os.getenv('HF_API_TOKEN')
-HF_API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"  # Fast, reliable, free model
+# Get Gemini API key from environment variable only (no hard-coded fallback!)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-if not HF_API_TOKEN:
-    print("⚠️ WARNING: HF_API_TOKEN environment variable not set!")
-    print("   LLM reasoning will be disabled. Get your free token at:")
-    print("   https://huggingface.co/settings/tokens")
-    print("   Then set it with: export HF_API_TOKEN='your-token-here'")
-    llm_enabled = False
+if not GEMINI_API_KEY:
+    print("⚠️ WARNING: GEMINI_API_KEY environment variable not set!")
+    print("   AI reasoning will be disabled. Set it with:")
+    print("   export GEMINI_API_KEY='your-api-key-here'")
+    gemini_model = None
 else:
-    llm_enabled = True
-    print("✅ Hugging Face LLM configured successfully!")
-
-# Rate limiting: track last request time
-last_llm_request_time = 0
-MIN_REQUEST_INTERVAL = 0.5  # Minimum 0.5 second between requests
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel(
+        'gemini-2.0-flash-exp',
+        generation_config={'temperature': 0.7, 'max_output_tokens': 150, 'top_p': 0.8, 'top_k': 40}
+    )
+    print("✅ Gemini API configured successfully!")
 
 
 MODEL_PATH = 'best_eladfp_model.pkl'
 if os.path.exists(MODEL_PATH):
     model = joblib.load(MODEL_PATH)
-    print("ELADFP Ensemble Model loaded successfully!")
+    print("✅ ELADFP Ensemble Model loaded successfully!")
 else:
     print(f"❌ ERROR: {MODEL_PATH} not found! Please run the training script first.")
     exit(1)
@@ -79,130 +76,57 @@ def preprocess_features(input_df):
     return df
 
 
-def generate_llm_reasoning(features, prediction, confidence):
+def generate_gemini_reasoning(features, prediction, confidence):
     """
-    Generate AI reasoning using Hugging Face LLM with rate limiting and retry logic.
-    If LLM fails, returns fallback reasoning - prediction still works!
+    Generate AI reasoning for the prediction. 
+    If Gemini fails or not configured, returns fallback reasoning - prediction still works!
     """
-    global last_llm_request_time
-    
-    # Extract values first for fallback
+    # Extract values for fallback
     posts = features.get('#posts', 0)
     followers = features.get('#followers', 0)
     following = features.get('#following', 0)
     nums_ratio = features.get('nums/length username', 0)
     bio_len = features.get('description length', 0)
     
-    # If LLM not configured, use fallback immediately
-    if not llm_enabled:
-        print("⚠️ LLM not configured - using fallback reasoning")
+    # If Gemini not configured, use fallback immediately
+    if gemini_model is None:
+        print("⚠️ Gemini not configured - using fallback reasoning")
         return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
     
     try:
-        print("\n🤖 Generating LLM reasoning...")
-        
-        # Rate limiting: ensure minimum interval between requests
-        current_time = time.time()
-        time_since_last_request = current_time - last_llm_request_time
-        if time_since_last_request < MIN_REQUEST_INTERVAL:
-            sleep_time = MIN_REQUEST_INTERVAL - time_since_last_request
-            print(f"⏳ Rate limiting: waiting {sleep_time:.2f}s before next request...")
-            time.sleep(sleep_time)
-        
-        last_llm_request_time = time.time()
+        print("\n🤖 Generating Gemini reasoning...")
 
-        # Build concise prompt for the LLM (FLAN-T5 format)
-        prompt = f"""Explain why this Instagram profile is {"fake" if prediction == 1 else "real"}: {int(posts)} posts, {int(followers)} followers, {int(following)} following, username is {int(nums_ratio * 100)}% numbers, bio has {int(bio_len)} characters, {"has" if features.get('profile pic', 0) == 1 else "no"} picture."""
+        prompt = f"""Analyze this Instagram profile briefly and explain the result.
 
-        print(f"📝 Sending prompt to Hugging Face...")
+Result: {"FAKE" if prediction == 1 else "REAL"} ({confidence['fake_profile_prob'] * 100:.0f}% confidence)
+Profile Stats: {int(posts)} posts, {int(followers)} followers, {int(following)} following
+Username: {int(nums_ratio * 100)}% numbers, Bio: {int(bio_len)} chars
+Picture: {"Yes" if features.get('profile pic', 0) == 1 else "No"}, Website: {"Yes" if features.get('external URL', 0) == 1 else "No"}
+Account Status: {"Private" if features.get('private', 0) == 1 else "Public"}
+
+Provide a brief 1-2 sentence explanation for why this is a {"fake" if prediction == 1 else "real"} profile."""
+
+        print(f"📝 Sending prompt to Gemini...")
+        response = gemini_model.generate_content(prompt, request_options={'timeout': 15})
         
-        headers = {
-            "Authorization": f"Bearer {HF_API_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": 80,
-                "temperature": 0.7,
-                "do_sample": True
-            },
-            "options": {
-                "use_cache": False,
-                "wait_for_model": True
-            }
-        }
-        
-        # Retry logic with exponential backoff
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = requests.post(
-                    HF_API_URL,
-                    headers=headers,
-                    json=payload,
-                    timeout=25
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    
-                    # Handle different response formats
-                    if isinstance(result, list) and len(result) > 0:
-                        generated_text = result[0].get('generated_text', '').strip()
-                    elif isinstance(result, dict):
-                        generated_text = result.get('generated_text', '').strip()
-                    else:
-                        generated_text = str(result).strip()
-                    
-                    if generated_text and len(generated_text) > 10:
-                        # Clean up the response
-                        generated_text = ' '.join(generated_text.split())[:250]
-                        print(f"✅ LLM response: {generated_text}")
-                        return generated_text
-                    else:
-                        print("⚠️ LLM returned empty/short response, using fallback")
-                        return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
-                
-                elif response.status_code == 503:
-                    # Model is loading
-                    print(f"⚠️ Model loading, retry {attempt + 1}/{max_retries}...")
-                    if attempt < max_retries - 1:
-                        time.sleep(8)  # Wait for model to load
-                        continue
-                    else:
-                        print("⚠️ Model still loading after retries, using fallback")
-                        return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
-                
-                else:
-                    error_msg = f"Status {response.status_code}: {response.text[:150]}"
-                    print(f"⚠️ API error: {error_msg}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    raise Exception(error_msg)
-                    
-            except requests.exceptions.RequestException as req_error:
-                if attempt < max_retries - 1:
-                    wait_time = (2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
-                    print(f"⚠️ Request failed, retry {attempt + 1}/{max_retries}, waiting {wait_time}s...")
-                    time.sleep(wait_time)
-                else:
-                    raise req_error
+        if response and response.text:
+            result = response.text.strip()
+            print(f"✅ Gemini response received: {result}")
+            return result
+        else:
+            print("⚠️ Gemini returned empty response, using fallback")
+            return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
 
     except Exception as e:
         error_msg = str(e)
-        print(f"⚠️ LLM API failed: {error_msg[:150]}")
+        print(f"⚠️ Gemini API failed: {error_msg[:100]}")
         
-        # Check error type
-        if "429" in error_msg or "rate limit" in error_msg.lower():
-            print("⚠️ Rate limit exceeded - using fallback reasoning")
-        elif "401" in error_msg or "403" in error_msg or "authentication" in error_msg.lower():
-            print("⚠️ Authentication failed - check your HF_API_TOKEN")
-            print("   Get your token at: https://huggingface.co/settings/tokens")
+        # Check if it's a rate limit error
+        if "429" in error_msg or "quota" in error_msg.lower() or "ResourceExhausted" in str(type(e)):
+            print("⚠️ Gemini API rate limit exceeded - using fallback reasoning")
+            print("   💡 Get a new API key at: https://aistudio.google.com/app/apikey")
         else:
-            print(f"⚠️ LLM error: {error_msg}")
+            print(f"⚠️ Gemini error: {error_msg}")
         
         # Return fallback reasoning instead of crashing
         return _get_fallback_reasoning(prediction, posts, followers, following, nums_ratio, bio_len)
@@ -249,7 +173,7 @@ def predict_fake():
     try:
         data = request.get_json()
         print("\n" + "="*70)
-        print("Received data for prediction:")
+        print("📩 Received data for prediction:")
         print(data)
         print("="*70)
 
@@ -273,13 +197,13 @@ def predict_fake():
         print(f"✅ Prediction → {'FAKE' if prediction == 1 else 'REAL'} | Fake Prob = {fake_prob:.3f}")
 
         confidence = {'real_profile_prob': real_prob, 'fake_profile_prob': fake_prob}
-        reasoning = generate_llm_reasoning(input_data, prediction, confidence)
+        reasoning = generate_gemini_reasoning(input_data, prediction, confidence)
 
         response = {
             'prediction': {'is_fake': int(prediction)},
             'confidence': confidence,
             'reasoning': reasoning,
-            'message': 'FAKE PROFILE DETECTED!' if prediction == 1 else '✅ Real Profile',
+            'message': '⚠️ FAKE PROFILE DETECTED!' if prediction == 1 else '✅ Real Profile',
             'features_used': input_data
         }
 
