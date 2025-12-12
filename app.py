@@ -15,25 +15,25 @@ CORS(app)
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 if not GEMINI_API_KEY:
-    print("⚠️ WARNING: GEMINI_API_KEY environment variable not set!")
+    print(" WARNING: GEMINI_API_KEY environment variable not set!")
     print("   AI reasoning will be disabled. Set it with:")
     print("   export GEMINI_API_KEY='your-api-key-here'")
     gemini_model = None
 else:
     genai.configure(api_key=GEMINI_API_KEY)
     gemini_model = genai.GenerativeModel(
-        'gemini-2.0-flash',
+        'gemini-2.5-pro',
         generation_config={'temperature': 0.7, 'max_output_tokens': 150, 'top_p': 0.8, 'top_k': 40}
     )
-    print("✅ Gemini API configured successfully!")
+    print("Gemini API configured successfully!")
 
 
 MODEL_PATH = 'best_eladfp_model.pkl'
 if os.path.exists(MODEL_PATH):
     model = joblib.load(MODEL_PATH)
-    print("✅ ELADFP Ensemble Model loaded successfully!")
+    print("ELADFP Ensemble Model loaded successfully!")
 else:
-    print(f"❌ ERROR: {MODEL_PATH} not found! Please run the training script first.")
+    print(f" ERROR: {MODEL_PATH} not found! Please run the training script first.")
     exit(1)
 
 INPUT_FEATURES = [
@@ -71,7 +71,7 @@ def preprocess_features(input_df):
     # Reorder columns to match training
     df = df[MODEL_FEATURES]
 
-    print("\n🧹 Preprocessed input:")
+    print("\nPreprocessed input:")
     print(df.to_string(index=False))
     return df
 
@@ -202,7 +202,7 @@ def predict_fake():
         proba = model.predict_proba(processed_df)[0]
         real_prob, fake_prob = float(proba[0]), float(proba[1])
 
-        print(f"✅ Prediction → {'FAKE' if prediction == 1 else 'REAL'} | Fake Prob = {fake_prob:.3f}")
+        print(f"Prediction → {'FAKE' if prediction == 1 else 'REAL'} | Fake Prob = {fake_prob:.3f}")
 
         confidence = {'real_profile_prob': real_prob, 'fake_profile_prob': fake_prob}
         reasoning = generate_gemini_reasoning(input_data, prediction, confidence)
@@ -211,7 +211,7 @@ def predict_fake():
             'prediction': {'is_fake': int(prediction)},
             'confidence': confidence,
             'reasoning': reasoning,
-            'message': '⚠️ FAKE PROFILE DETECTED!' if prediction == 1 else '✅ Real Profile',
+            'message': 'FAKE PROFILE DETECTED!' if prediction == 1 else 'Real Profile',
             'features_used': input_data
         }
 
